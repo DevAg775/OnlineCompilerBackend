@@ -1,6 +1,7 @@
 import amqplib,{ Channel, Connection } from 'amqplib'
 import cors from 'cors'
 import express from 'express'
+import { v4 as uuidv4 } from 'uuid'
 
 const app = express()
 const PORT = 3001
@@ -18,7 +19,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.use(express.json());
 
-let channel: Channel, connection:Connection;
+let channel: Channel, connection:any;
 
 connect()
 async function connect(){
@@ -34,12 +35,15 @@ async function connect(){
 }
 app.post('/api/compile',async (req,res)=>{
     const data = req.body;
+    const executionId = uuidv4();
     channel.sendToQueue('CodeSender',Buffer.from(JSON.stringify({
         ...data,
+        executionId,
         date: new Date(),
     })))
     res.status(200).json({
-        msg: `Code sended to amqp`
+        msg: `Code sent to queue`,
+        executionId
     })
 })
 

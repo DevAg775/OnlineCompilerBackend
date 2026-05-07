@@ -15,6 +15,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const amqplib_1 = __importDefault(require("amqplib"));
 const cors_1 = __importDefault(require("cors"));
 const express_1 = __importDefault(require("express"));
+const uuid_1 = require("uuid");
 const app = (0, express_1.default)();
 const PORT = 3001;
 // CORS configuration
@@ -45,9 +46,11 @@ function connect() {
 }
 app.post('/api/compile', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const data = req.body;
-    channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify(Object.assign(Object.assign({}, data), { date: new Date() }))));
+    const executionId = (0, uuid_1.v4)();
+    channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify(Object.assign(Object.assign({}, data), { executionId, date: new Date() }))));
     res.status(200).json({
-        msg: `Code sended to amqp`
+        msg: `Code sent to queue`,
+        executionId
     });
 }));
 app.listen(PORT, () => {
