@@ -1,4 +1,37 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, generator) {
     function adopt(value) { return value instanceof P ? value : new P(function (resolve) { resolve(value); }); }
     return new (P || (P = Promise))(function (resolve, reject) {
@@ -12,13 +45,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.Execution = void 0;
 const amqplib_1 = __importDefault(require("amqplib"));
 const cors_1 = __importDefault(require("cors"));
 const express_1 = __importDefault(require("express"));
+const mongoose_1 = __importStar(require("mongoose"));
 const uuid_1 = require("uuid");
+const dotenv_1 = __importDefault(require("dotenv"));
+dotenv_1.default.config();
 const app = (0, express_1.default)();
 const PORT = 3001;
-// CORS configuration
+// ─── CORS ────────────────────────────────────────────────────────────────────
 const corsOptions = {
     origin: '*',
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -26,33 +63,100 @@ const corsOptions = {
     credentials: true,
     optionsSuccessStatus: 204
 };
-// Apply CORS before other middleware
 app.use((0, cors_1.default)(corsOptions));
 app.use(express_1.default.json());
-let channel, connection;
-connect();
-function connect() {
+// 2. Schema — MongoDB 
+const ExecutionSchema = new mongoose_1.Schema({
+    executionId: { type: String, required: true, unique: true },
+    code: { type: String, required: true },
+    language: { type: String, required: true },
+    status: { type: String, enum: ['pending', 'running', 'completed', 'failed'], default: 'pending' },
+    output: { type: String, default: null },
+    exitCode: { type: Number, default: null },
+    error: { type: String, default: null },
+    createdAt: { type: Date, default: Date.now },
+    completedAt: { type: Date, default: null }
+});
+// 3. Model
+exports.Execution = mongoose_1.default.model('Execution', ExecutionSchema);
+// 4. MongoDB connect
+function connectMongo() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            const amqpServer = 'amqp://localhost:5672'; //amqp means Advanced Message Queuing Protocol and here i have provided the link for the amqp server also rabbitmq have default port as 5672
-            connection = yield amqplib_1.default.connect(amqpServer); //establising connection to amqp server 
-            channel = yield connection.createChannel(); //creating channel for amqp server 
-            yield channel.assertQueue('CodeSender'); // here i am using the channel we have created and putting in queue name as CodeSender 
+            yield mongoose_1.default.connect(process.env.MONGODB_URI || '');
+            console.log('MongoDB connected');
         }
         catch (err) {
-            console.log(`unable to connect to RabbitMq please make sure that the server url is correct or server is active  ${err}`);
+            console.error('MongoDB connection failed', err);
+            process.exit(1); //  close the server if MongoDB not runs
         }
     });
 }
-app.post('/api/compile', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const data = req.body;
-    const executionId = (0, uuid_1.v4)();
-    channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify(Object.assign(Object.assign({}, data), { executionId, date: new Date() }))));
-    res.status(200).json({
-        msg: `Code sent to queue`,
-        executionId
+// ─── RabbitMQ ─────────────────────────────────────────────────────────────────
+let channel, connection;
+function connectRabbitMQ() {
+    return __awaiter(this, void 0, void 0, function* () {
+        try {
+            const amqpServer = 'amqp://localhost:5672';
+            connection = yield amqplib_1.default.connect(amqpServer);
+            channel = yield connection.createChannel();
+            yield channel.assertQueue('CodeSender');
+            console.log('RabbitMQ connected');
+        }
+        catch (err) {
+            console.error(`RabbitMQ connection failed ${err}`);
+        }
     });
+}
+// ─── Routes ───────────────────────────────────────────────────────────────────
+// Job submit
+app.post('/api/compile', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const data = req.body;
+        const executionId = (0, uuid_1.v4)();
+        // create "pending" record in MongoDB
+        yield exports.Execution.create({
+            executionId,
+            code: data.code,
+            language: data.language || data.Lang,
+            status: 'pending',
+            createdAt: new Date()
+        });
+        console.log(`Execution record created: ${executionId}`);
+        // push Job in RabbitMQ (same as before)
+        channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify(Object.assign(Object.assign({}, data), { executionId, date: new Date() }))));
+        res.status(200).json({
+            msg: `Code sent to queue`,
+            executionId
+        });
+    }
+    catch (err) {
+        console.error('Error in /api/compile:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
 }));
-app.listen(PORT, () => {
-    console.log(`Server running on ${PORT}`);
-});
+// fetch status/result of Execution
+app.get('/api/execution/:id', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    try {
+        const execution = yield exports.Execution.findOne({ executionId: req.params.id });
+        if (!execution) {
+            res.status(404).json({ error: 'Execution not found' });
+        }
+        res.status(200).json(execution);
+    }
+    catch (err) {
+        console.error('Error fetching execution:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+}));
+// ─── Start ────────────────────────────────────────────────────────────────────
+function start() {
+    return __awaiter(this, void 0, void 0, function* () {
+        yield connectMongo(); //  MongoDB
+        yield connectRabbitMQ(); //  RabbitMQ
+        app.listen(PORT, () => {
+            console.log(`Server running on ${PORT} 🚀`);
+        });
+    });
+}
+start();
