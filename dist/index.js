@@ -51,6 +51,8 @@ const cors_1 = __importDefault(require("cors"));
 const express_1 = __importDefault(require("express"));
 const mongoose_1 = __importStar(require("mongoose"));
 const uuid_1 = require("uuid");
+const ioredis_1 = __importDefault(require("ioredis"));
+const crypto_1 = __importDefault(require("crypto"));
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
@@ -65,7 +67,7 @@ const corsOptions = {
 };
 app.use((0, cors_1.default)(corsOptions));
 app.use(express_1.default.json());
-// 2. Schema — MongoDB 
+// 2. Schema — MongoDB ko batao document kaisa dikhega
 const ExecutionSchema = new mongoose_1.Schema({
     executionId: { type: String, required: true, unique: true },
     code: { type: String, required: true },
@@ -77,9 +79,9 @@ const ExecutionSchema = new mongoose_1.Schema({
     createdAt: { type: Date, default: Date.now },
     completedAt: { type: Date, default: null }
 });
-// 3. Model
+// 3. Model — is schema se queries chalayenge
 exports.Execution = mongoose_1.default.model('Execution', ExecutionSchema);
-// 4. MongoDB connect
+// 4. MongoDB se connect karo
 function connectMongo() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
@@ -88,7 +90,7 @@ function connectMongo() {
         }
         catch (err) {
             console.error('MongoDB connection failed', err);
-            process.exit(1); //  close the server if MongoDB not runs
+            process.exit(1); // MongoDB na chale toh server band kar do
         }
     });
 }
@@ -97,7 +99,7 @@ let channel, connection;
 function connectRabbitMQ() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            const amqpServer = 'amqp://localhost:5672';
+            const amqpServer = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
             connection = yield amqplib_1.default.connect(amqpServer);
             channel = yield connection.createChannel();
             yield channel.assertQueue('CodeSender');
@@ -108,13 +110,34 @@ function connectRabbitMQ() {
         }
     });
 }
+//─── Reddis ───────────────────────────────────────────────────────────────────
+const redis = new ioredis_1.default(process.env.REDIS_URL || '');
+redis.on('connect', () => console.log('Redis connected'));
+redis.on('error', (err) => console.error('Redis error', err));
 // ─── Routes ───────────────────────────────────────────────────────────────────
-// Job submit
+// Job submit karo
 app.post('/api/compile', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const data = req.body;
+        // Generate cache key from code + language
+        const cacheKey = crypto_1.default
+            .createHash('md5')
+            .update(data.code + (data.language || data.Lang))
+            .digest('hex');
+        // Check Redis cache first
+        const cached = yield redis.get(cacheKey);
+        if (cached) {
+            console.log(`Cache HIT for key: ${cacheKey}`);
+            res.status(200).json({
+                msg: 'Result from cache',
+                cached: true,
+                result: JSON.parse(cached)
+            });
+            return;
+        }
+        console.log(`Cache MISS for key: ${cacheKey}`);
         const executionId = (0, uuid_1.v4)();
-        // create "pending" record in MongoDB
+        // Save to MongoDB
         yield exports.Execution.create({
             executionId,
             code: data.code,
@@ -122,11 +145,12 @@ app.post('/api/compile', (req, res) => __awaiter(void 0, void 0, void 0, functio
             status: 'pending',
             createdAt: new Date()
         });
-        console.log(`Execution record created: ${executionId}`);
-        // push Job in RabbitMQ (same as before)
-        channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify(Object.assign(Object.assign({}, data), { executionId, date: new Date() }))));
+        // Push to RabbitMQ with cacheKey so worker can cache result
+        channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify(Object.assign(Object.assign({}, data), { executionId,
+            cacheKey, date: new Date() }))));
         res.status(200).json({
-            msg: `Code sent to queue`,
+            msg: 'Code sent to queue',
+            cached: false,
             executionId
         });
     }
@@ -135,7 +159,7 @@ app.post('/api/compile', (req, res) => __awaiter(void 0, void 0, void 0, functio
         res.status(500).json({ error: 'Internal server error' });
     }
 }));
-// fetch status/result of Execution
+// Execution ka status/result fetch karo
 app.get('/api/execution/:id', (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     try {
         const execution = yield exports.Execution.findOne({ executionId: req.params.id });
@@ -152,10 +176,10 @@ app.get('/api/execution/:id', (req, res) => __awaiter(void 0, void 0, void 0, fu
 // ─── Start ────────────────────────────────────────────────────────────────────
 function start() {
     return __awaiter(this, void 0, void 0, function* () {
-        yield connectMongo(); //  MongoDB
-        yield connectRabbitMQ(); //  RabbitMQ
+        yield connectMongo(); // pehle MongoDB
+        yield connectRabbitMQ(); // phir RabbitMQ
         app.listen(PORT, () => {
-            console.log(`Server running on ${PORT} 🚀`);
+            console.log(`Server running on ${PORT}`);
         });
     });
 }
