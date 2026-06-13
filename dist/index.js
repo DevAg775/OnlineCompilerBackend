@@ -100,13 +100,16 @@ function connectRabbitMQ() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
             const amqpServer = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
+            console.log('Connecting to RabbitMQ:', amqpServer);
             connection = yield amqplib_1.default.connect(amqpServer);
             channel = yield connection.createChannel();
             yield channel.assertQueue('CodeSender');
             console.log('RabbitMQ connected');
         }
         catch (err) {
-            console.error(`RabbitMQ connection failed ${err}`);
+            console.error(`RabbitMQ connection failed:`, JSON.stringify(err, null, 2));
+            console.error('Error message:', err.message);
+            console.error('Error errors:', err.errors);
         }
     });
 }
