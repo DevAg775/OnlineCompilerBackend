@@ -3,6 +3,8 @@ import cors from 'cors'
 import express from 'express'
 import mongoose, { Schema, Document } from 'mongoose'
 import { v4 as uuidv4 } from 'uuid'
+import Redis from 'ioredis'
+import crypto from 'crypto'
 import dotenv from 'dotenv'
 dotenv.config()
 
@@ -54,7 +56,7 @@ export const Execution = mongoose.model<IExecution>('Execution', ExecutionSchema
 // 4. MongoDB se connect karo
 async function connectMongo() {
     try {
-        await mongoose.connect(process.env.MONGODB_URI|| '')
+        await mongoose.connect(process.env.MONGODB_URI || '')
         console.log('MongoDB connected')
     } catch (err) {
         console.error('MongoDB connection failed', err)
@@ -67,15 +69,24 @@ let channel: Channel, connection: any;
 
 async function connectRabbitMQ() {
     try {
-        const amqpServer = 'amqp://localhost:5672'
+        const amqpServer = 'amqp://admin:admin123@3.110.108.63:5672'        
+        console.log('Connecting to RabbitMQ:', amqpServer)
         connection = await amqplib.connect(amqpServer)
         channel = await connection.createChannel()
         await channel.assertQueue('CodeSender')
         console.log('RabbitMQ connected')
-    } catch (err) {
-        console.error(`RabbitMQ connection failed ${err}`)
+    } catch (err: any) {
+        console.error(`RabbitMQ connection failed:`, JSON.stringify(err, null, 2))
+        console.error('Error message:', err.message)
+        console.error('Error errors:', err.errors)
     }
 }
+
+//─── Reddis ───────────────────────────────────────────────────────────────────
+
+const redis = new Redis(process.env.REDIS_URL || '')
+redis.on('connect', () => console.log('Redis connected'))
+redis.on('error', (err) => console.error('Redis error', err))
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
@@ -83,9 +94,29 @@ async function connectRabbitMQ() {
 app.post('/api/compile', async (req, res) => {
     try {
         const data = req.body;
+
+        // Generate cache key from code + language
+        const cacheKey = crypto
+            .createHash('md5')
+            .update(data.code + (data.language || data.Lang))
+            .digest('hex')
+
+        // Check Redis cache first
+        const cached = await redis.get(cacheKey)
+        if (cached) {
+            console.log(`Cache HIT for key: ${cacheKey}`)
+            res.status(200).json({
+                msg: 'Result from cache',
+                cached: true,
+                result: JSON.parse(cached)
+            })
+            return
+        }
+
+        console.log(`Cache MISS for key: ${cacheKey}`)
         const executionId = uuidv4();
 
-        // MongoDB mein "pending" record banao
+        // Save to MongoDB
         await Execution.create({
             executionId,
             code: data.code,
@@ -93,17 +124,18 @@ app.post('/api/compile', async (req, res) => {
             status: 'pending',
             createdAt: new Date()
         })
-        console.log(`Execution record created: ${executionId}`)
 
-        // RabbitMQ mein job push karo (same as before)
+        // Push to RabbitMQ with cacheKey so worker can cache result
         channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify({
             ...data,
             executionId,
+            cacheKey,
             date: new Date(),
         })))
 
         res.status(200).json({
-            msg: `Code sent to queue`,
+            msg: 'Code sent to queue',
+            cached: false,
             executionId
         })
     } catch (err) {
