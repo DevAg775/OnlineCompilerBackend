@@ -69,7 +69,7 @@ let channel: Channel, connection: any;
 
 async function connectRabbitMQ() {
     try {
-        const amqpServer = 'amqp://admin:admin123@3.110.108.63:5672'        
+        const amqpServer = process.env.RABBITMQ_URL || 'amqp://localhost:5672'        
         console.log('Connecting to RabbitMQ:', amqpServer)
         connection = await amqplib.connect(amqpServer)
         channel = await connection.createChannel()

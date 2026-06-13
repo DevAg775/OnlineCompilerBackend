@@ -99,7 +99,7 @@ let channel, connection;
 function connectRabbitMQ() {
     return __awaiter(this, void 0, void 0, function* () {
         try {
-            const amqpServer = 'amqp://admin:admin123@3.110.108.63:5672';
+            const amqpServer = process.env.RABBITMQ_URL || 'amqp://localhost:5672';
             console.log('Connecting to RabbitMQ:', amqpServer);
             connection = yield amqplib_1.default.connect(amqpServer);
             channel = yield connection.createChannel();
