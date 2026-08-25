@@ -128,7 +128,7 @@ app.post('/api/compile', async (req, res) => {
         })
 
         // Push to RabbitMQ with cacheKey so worker can cache result
-        channel.sendToQueue('CodeSender', Buffer.from(JSON.stringify({
+        channel!.sendToQueue('CodeSender', Buffer.from(JSON.stringify({
             ...data,
             executionId,
             cacheKey,
