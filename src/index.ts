@@ -65,22 +65,20 @@ async function connectMongo() {
 }
 
 // ─── RabbitMQ ─────────────────────────────────────────────────────────────────
-let channel: Channel | null, connection: any;
+let channel: Channel, connection: any;
 
 async function connectRabbitMQ() {
     try {
-        const amqpServer = process.env.RABBITMQ_URL || 'amqp://admin:admin123@3.110.108.63:5672'
+        const amqpServer = process.env.RABBITMQ_URL || 'amqp://localhost:5672'        
         console.log('Connecting to RabbitMQ:', amqpServer)
         connection = await amqplib.connect(amqpServer)
         channel = await connection.createChannel()
-        await channel!.assertQueue('CodeSender')
+        await channel.assertQueue('CodeSender')
         console.log('RabbitMQ connected')
-        connection.on('error', () => { console.log('RabbitMQ error, reconnecting...'); channel = null; setTimeout(connectRabbitMQ, 5000); })
-        connection.on('close', () => { console.log('RabbitMQ closed, reconnecting...'); channel = null; setTimeout(connectRabbitMQ, 5000); })
     } catch (err: any) {
-        console.error('RabbitMQ connection failed:', err.message)
-        channel = null
-        setTimeout(connectRabbitMQ, 5000)
+        console.error(`RabbitMQ connection failed:`, JSON.stringify(err, null, 2))
+        console.error('Error message:', err.message)
+        console.error('Error errors:', err.errors)
     }
 }
 
